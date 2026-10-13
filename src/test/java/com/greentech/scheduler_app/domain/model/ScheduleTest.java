@@ -29,4 +29,46 @@ class ScheduleTest {
 				.isInstanceOf(InvalidScheduleException.class)
 				.hasMessage("dueAt must be in the future");
 	}
+
+	@Test
+	void reschedulesByIncrementingVersionAndPreservingIdentity() {
+		Schedule original = Schedule.create("tenant-a", "schedule-1", NOW.plusSeconds(30), "{}", NOW);
+		Instant changedAt = NOW.plusSeconds(5);
+		Instant newDueAt = NOW.plusSeconds(60);
+
+		Schedule rescheduled = original.reschedule(newDueAt, changedAt);
+
+		assertThat(rescheduled.version()).isEqualTo(2);
+		assertThat(rescheduled.dueAt()).isEqualTo(newDueAt);
+		assertThat(rescheduled.state()).isEqualTo(ScheduleState.SCHEDULED);
+		assertThat(rescheduled.createdAt()).isEqualTo(NOW);
+		assertThat(rescheduled.updatedAt()).isEqualTo(changedAt);
+		assertThat(rescheduled.cancelledAt()).isNull();
+	}
+
+	@Test
+	void cancelsByIncrementingVersionAndRecordingTimestamp() {
+		Schedule original = Schedule.create("tenant-a", "schedule-1", NOW.plusSeconds(30), "{}", NOW);
+		Instant cancelledAt = NOW.plusSeconds(5);
+
+		Schedule cancelled = original.cancel(cancelledAt);
+
+		assertThat(cancelled.version()).isEqualTo(2);
+		assertThat(cancelled.state()).isEqualTo(ScheduleState.CANCELLED);
+		assertThat(cancelled.cancelledAt()).isEqualTo(cancelledAt);
+		assertThat(cancelled.updatedAt()).isEqualTo(cancelledAt);
+	}
+
+	@Test
+	void rejectsMutationAfterCancellation() {
+		Schedule cancelled = Schedule.create("tenant-a", "schedule-1", NOW.plusSeconds(30), "{}", NOW)
+				.cancel(NOW.plusSeconds(5));
+
+		assertThatThrownBy(() -> cancelled.reschedule(NOW.plusSeconds(60), NOW.plusSeconds(10)))
+				.isInstanceOf(InvalidScheduleException.class)
+				.hasMessage("cannot reschedule schedule in state CANCELLED");
+		assertThatThrownBy(() -> cancelled.cancel(NOW.plusSeconds(10)))
+				.isInstanceOf(InvalidScheduleException.class)
+				.hasMessage("cannot cancel schedule in state CANCELLED");
+	}
 }

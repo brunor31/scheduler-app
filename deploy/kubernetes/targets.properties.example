@@ -1,0 +1,7 @@
+scheduler.targets.endpoints.billing.url=https://REPLACE_APPROVED_HOST/scheduled-events
+scheduler.targets.endpoints.billing.tenants=REPLACE_TENANT
+scheduler.targets.endpoints.billing.bearer-token-env=SCHEDULER_TARGET_BILLING_TOKEN
+scheduler.targets.endpoints.billing.timeout=5s
+scheduler.targets.endpoints.billing.max-concurrency=8
+scheduler.targets.endpoints.billing.tenant-concurrency=2
+scheduler.targets.endpoints.billing.allow-private-network=false

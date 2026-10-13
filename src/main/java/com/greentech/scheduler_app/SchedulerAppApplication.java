@@ -7,7 +7,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class SchedulerAppApplication {
 
 	public static void main(String[] args) {
-		SpringApplication.run(SchedulerAppApplication.class, args);
+		var context = SpringApplication.run(SchedulerAppApplication.class, args);
+        if (context.getEnvironment().getProperty("scheduler.migration-only", Boolean.class, false)) {
+            System.exit(SpringApplication.exit(context));
+        }
 	}
 
 }

@@ -1,0 +1,31 @@
+# Prometheus rule file; initial operational thresholds, not agreed business SLOs.
+# Scrape each replica with a JWT scoped scheduler:observe. Backlog gauges are
+# shared-database values: aggregate with max, never sum across replicas.
+groups:
+  - name: scheduler
+    rules:
+      - alert: SchedulerUnavailable
+        expr: sum(up{job="scheduler"}) < 1 or absent(up{job="scheduler"})
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: "No scheduler replica is reachable"}
+      - alert: SchedulerOverdueBacklog
+        expr: max(scheduler_overdue_oldest_seconds) > 60
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Pending delivery is overdue by more than 60 seconds"}
+      - alert: SchedulerDeadLetters
+        expr: max(scheduler_backlog{state="DEAD_LETTERED"}) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Dead letters need review before redrive"}
+      - alert: SchedulerBacklogMetricsUnavailable
+        expr: max(scheduler_backlog_sample_success) == 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: "Cannot sample scheduler database backlog"}
+      - alert: SchedulerUnknownDeliveryOutcomes
+        expr: sum(rate(scheduler_delivery_attempts_total{outcome="UNKNOWN"}[5m])) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Destination delivery acknowledgements are uncertain"}

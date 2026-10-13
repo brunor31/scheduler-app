@@ -1,0 +1,11 @@
+**
+!target/
+!target/scheduler-app-0.0.1-SNAPSHOT.jar
+!scripts/
+!scripts/testing/
+!scripts/testing/receiver.py
+!scripts/testing/DevIdentityServer.java
+!deploy/
+!deploy/local/
+!deploy/local/Dockerfile.*
+!Dockerfile

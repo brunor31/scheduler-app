@@ -7,10 +7,12 @@ import com.greentech.scheduler_app.domain.model.Schedule;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,7 +41,7 @@ class CreateScheduleServiceTest {
 		assertThat(timer.repositoryWasWrittenFirst).isTrue();
 	}
 
-	private static final class RecordingRepository implements ScheduleRepository {
+	private static final class RecordingRepository extends com.greentech.scheduler_app.support.StubScheduleRepository {
 
 		private Schedule inserted;
 
@@ -54,12 +56,23 @@ class CreateScheduleServiceTest {
 		}
 
 		@Override
-		public List<Schedule> findScheduledDueBefore(Instant horizon, int limit) {
+		public List<Schedule> findRecoverableDueBefore(Instant horizon, int limit) {
 			return List.of();
 		}
 
 		@Override
-		public boolean markDelivered(String tenantId, String scheduleId, long expectedVersion, Instant deliveredAt) {
+		public boolean update(Schedule schedule, long expectedVersion) {
+			return false;
+		}
+
+		@Override
+		public Optional<Schedule> tryClaim(String tenantId, String scheduleId, long expectedVersion,
+				UUID attemptToken, Duration leaseDuration) {
+			throw new UnsupportedOperationException();
+		}
+
+		@Override
+		public boolean markDelivered(String tenantId, String scheduleId, long expectedVersion, UUID attemptToken, Instant deliveredAt) {
 			return false;
 		}
 	}

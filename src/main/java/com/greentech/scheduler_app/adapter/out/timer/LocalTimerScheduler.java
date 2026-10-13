@@ -2,6 +2,9 @@ package com.greentech.scheduler_app.adapter.out.timer;
 
 import com.greentech.scheduler_app.application.port.in.HandleDueScheduleUseCase;
 import com.greentech.scheduler_app.application.port.out.ScheduleTimer;
+import com.greentech.scheduler_app.application.port.out.ScheduleRepository;
+import com.greentech.scheduler_app.infrastructure.config.TimerProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.greentech.scheduler_app.domain.model.Schedule;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -31,52 +34,62 @@ public class LocalTimerScheduler implements ScheduleTimer, SmartLifecycle {
 
 	private final DelayQueue<TimerEntry> timerQueue = new DelayQueue<>();
 	private final BlockingQueue<TimerEntry> deliveryQueue;
+	private final java.util.Map<String, TimerEntry> queuedBySchedule = new ConcurrentHashMap<>();
 	private final Set<TimerKey> activeKeys = ConcurrentHashMap.newKeySet();
 	private final AtomicInteger deliveriesInProgress = new AtomicInteger();
 	private final HandleDueScheduleUseCase dueScheduleHandler;
 	private final Clock clock;
 	private final int deliveryWorkerCount;
-	private volatile boolean running;
+	@org.springframework.beans.factory.annotation.Value("${scheduler.migration-only:false}")
+    private boolean migrationOnly;
+    @Override public boolean isAutoStartup() { return !migrationOnly; }
+    private volatile boolean running;
+    private volatile boolean accepting = true;
+    private final TimerProperties properties;
+    private final ScheduleRepository repository;
 	private ExecutorService timerCoordinator;
 	private ExecutorService deliveryWorkers;
 
-	public LocalTimerScheduler(
-			HandleDueScheduleUseCase dueScheduleHandler,
-			Clock clock,
-			MeterRegistry meterRegistry,
-			@Value("${scheduler.timer.delivery-workers:1}") int deliveryWorkerCount,
-			@Value("${scheduler.timer.delivery-queue-capacity:1000}") int deliveryQueueCapacity
-	) {
-		if (deliveryWorkerCount < 1) {
-			throw new IllegalArgumentException("deliveryWorkerCount must be at least 1");
-		}
-		if (deliveryQueueCapacity < 1) {
-			throw new IllegalArgumentException("deliveryQueueCapacity must be at least 1");
-		}
-		this.dueScheduleHandler = dueScheduleHandler;
-		this.clock = clock;
-		this.deliveryWorkerCount = deliveryWorkerCount;
-		this.deliveryQueue = new ArrayBlockingQueue<>(deliveryQueueCapacity);
-		Gauge.builder("scheduler.timer.queue.size", timerQueue, DelayQueue::size).register(meterRegistry);
-		Gauge.builder("scheduler.delivery.queue.size", deliveryQueue, BlockingQueue::size).register(meterRegistry);
-		Gauge.builder("scheduler.delivery.in.progress", deliveriesInProgress, AtomicInteger::get).register(meterRegistry);
-		Gauge.builder("scheduler.timer.active.keys", activeKeys, Set::size).register(meterRegistry);
-	}
+	public LocalTimerScheduler(HandleDueScheduleUseCase handler, Clock clock, MeterRegistry registry, int workers, int capacity) {
+        this(handler,clock,registry,workers,capacity,new TimerProperties(null,null,1000,100000,100,null),null);
+    }
+
+    @Autowired
+    public LocalTimerScheduler(HandleDueScheduleUseCase handler, Clock clock, MeterRegistry registry,
+            @Value("${scheduler.timer.delivery-workers:4}") int workers,
+            @Value("${scheduler.timer.delivery-queue-capacity:1000}") int capacity,
+            TimerProperties properties, ScheduleRepository repository) {
+        if(workers<1) throw new IllegalArgumentException("deliveryWorkerCount must be at least 1");
+        if(capacity<1) throw new IllegalArgumentException("deliveryQueueCapacity must be at least 1");
+        this.dueScheduleHandler=handler; this.clock=clock; this.deliveryWorkerCount=workers;
+        this.deliveryQueue=new ArrayBlockingQueue<>(capacity); this.properties=properties; this.repository=repository;
+        Gauge.builder("scheduler.timer.queue.size",timerQueue,DelayQueue::size).register(registry);
+        Gauge.builder("scheduler.delivery.queue.size",deliveryQueue,BlockingQueue::size).register(registry);
+        Gauge.builder("scheduler.delivery.in.progress",deliveriesInProgress,AtomicInteger::get).register(registry);
+        Gauge.builder("scheduler.timer.active.keys",activeKeys,Set::size).register(registry);
+    }
 
 	@Override
-	public void schedule(Schedule schedule) {
-		TimerKey key = new TimerKey(schedule.tenantId(), schedule.scheduleId(), schedule.version());
-		if (!activeKeys.add(key)) {
-			return;
-		}
-		long delayNanos = Math.max(0, safeNanos(Duration.between(clock.instant(), schedule.dueAt())));
-		try {
-			timerQueue.add(new TimerEntry(key, System.nanoTime() + delayNanos));
-		} catch (RuntimeException exception) {
-			activeKeys.remove(key);
-			throw exception;
-		}
-	}
+    public synchronized void schedule(Schedule schedule) {
+        if(!accepting || schedule.state().terminal() || schedule.effectiveDueAt().isAfter(clock.instant().plus(properties.lookAhead()))) return;
+        TimerKey key=new TimerKey(schedule.tenantId(),schedule.scheduleId(),schedule.version());
+        if(activeKeys.contains(key)) return;
+        // Remove superseded entries still waiting locally; correctness still belongs to the database CAS.
+        String identity = identity(key);
+        TimerEntry older = queuedBySchedule.get(identity);
+        if (older != null && older.key().version() > key.version()) return;
+        if (older != null && older.key().version() < key.version()
+                && (timerQueue.remove(older) || deliveryQueue.remove(older))) activeKeys.remove(older.key());
+        if(activeKeys.size()>=properties.maxLoaded() || !activeKeys.add(key)) return;
+        long delay=Math.max(0,safeNanos(Duration.between(clock.instant(),schedule.effectiveDueAt())));
+        TimerEntry entry = new TimerEntry(key,System.nanoTime()+delay,schedule.effectiveDueAt());
+        queuedBySchedule.put(identity,entry);
+        timerQueue.add(entry);
+    }
+
+    private static String identity(TimerKey key) { return key.tenantId() + ":" + key.scheduleId(); }
+
+    @Override public int remainingCapacity() { return Math.max(0,properties.maxLoaded()-activeKeys.size()); }
 
 	@Override
 	public synchronized void start() {
@@ -84,6 +97,7 @@ public class LocalTimerScheduler implements ScheduleTimer, SmartLifecycle {
 			return;
 		}
 		running = true;
+        accepting = true;
 		timerCoordinator = Executors.newSingleThreadExecutor(
 				Thread.ofPlatform().name("local-timer-coordinator").factory()
 		);
@@ -98,21 +112,18 @@ public class LocalTimerScheduler implements ScheduleTimer, SmartLifecycle {
 	}
 
 	@Override
-	public synchronized void stop() {
-		running = false;
-		if (timerCoordinator != null) {
-			shutdown(timerCoordinator);
-			timerCoordinator = null;
-		}
-		if (deliveryWorkers != null) {
-			shutdown(deliveryWorkers);
-			deliveryWorkers = null;
-		}
-		timerQueue.clear();
-		deliveryQueue.clear();
-		activeKeys.clear();
-		deliveriesInProgress.set(0);
-	}
+    public void stop() {
+        accepting=false; running=false;
+        if(timerCoordinator!=null) { timerCoordinator.shutdownNow(); timerCoordinator=null; }
+        if(deliveryWorkers!=null) {
+            deliveryWorkers.shutdown();
+            try {
+                if(!deliveryWorkers.awaitTermination(properties.drainTimeout().toMillis(),TimeUnit.MILLISECONDS)) deliveryWorkers.shutdownNow();
+            } catch(InterruptedException exception) { Thread.currentThread().interrupt(); deliveryWorkers.shutdownNow(); }
+            deliveryWorkers=null;
+        }
+        timerQueue.clear(); deliveryQueue.clear(); activeKeys.clear(); queuedBySchedule.clear();
+    }
 
 	@Override
 	public boolean isRunning() {
@@ -131,10 +142,10 @@ public class LocalTimerScheduler implements ScheduleTimer, SmartLifecycle {
 	}
 
 	private void runDeliveryLoop() {
-		while (running && !Thread.currentThread().isInterrupted()) {
+		while ((running || !deliveryQueue.isEmpty()) && !Thread.currentThread().isInterrupted()) {
 			try {
-				TimerEntry entry = deliveryQueue.take();
-				deliver(entry);
+				TimerEntry entry = deliveryQueue.poll(100, TimeUnit.MILLISECONDS);
+				if (entry != null) deliver(entry);
 			} catch (InterruptedException exception) {
 				Thread.currentThread().interrupt();
 			}
@@ -142,14 +153,24 @@ public class LocalTimerScheduler implements ScheduleTimer, SmartLifecycle {
 	}
 
 	private void deliver(TimerEntry entry) {
+        queuedBySchedule.remove(identity(entry.key()), entry);
 		deliveriesInProgress.incrementAndGet();
 		try {
 			dueScheduleHandler.handle(entry.key().tenantId(), entry.key().scheduleId(), entry.key().version());
 		} catch (RuntimeException exception) {
-			LOGGER.error("Local timer execution failed", exception);
+			LOGGER.error("Local timer execution failed: {}", exception.getClass().getSimpleName());
 		} finally {
 			deliveriesInProgress.decrementAndGet();
 			activeKeys.remove(entry.key());
+            if(running && repository!=null) {
+                try {
+                    repository.findById(entry.key().tenantId(),entry.key().scheduleId())
+                        .filter(s -> s.state().mutable() && (s.version() > entry.key().version()
+                            || s.effectiveDueAt().isAfter(entry.effectiveDueAt()))).ifPresent(this::schedule);
+                } catch(RuntimeException exception) {
+                    LOGGER.warn("Timer reload deferred to reconciliation: {}",exception.getClass().getSimpleName());
+                }
+            }
 		}
 	}
 
@@ -175,7 +196,7 @@ public class LocalTimerScheduler implements ScheduleTimer, SmartLifecycle {
 	private record TimerKey(String tenantId, String scheduleId, long version) {
 	}
 
-	private record TimerEntry(TimerKey key, long deadlineNanos) implements Delayed {
+	private record TimerEntry(TimerKey key, long deadlineNanos, java.time.Instant effectiveDueAt) implements Delayed {
 
 		@Override
 		public long getDelay(TimeUnit unit) {

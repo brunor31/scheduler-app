@@ -1,156 +1,111 @@
 package com.greentech.scheduler_app.adapter.in.web;
 
-import com.greentech.scheduler_app.application.port.in.CreateScheduleCommand;
-import com.greentech.scheduler_app.application.port.in.CreateScheduleUseCase;
-import com.greentech.scheduler_app.domain.model.Schedule;
+import com.greentech.scheduler_app.application.port.in.*;
+import com.greentech.scheduler_app.application.service.ScheduleQueryService;
+import com.greentech.scheduler_app.domain.exception.InvalidScheduleException;
+import com.greentech.scheduler_app.domain.model.*;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.headers.Header;
-import io.swagger.v3.oas.annotations.media.Content;
-import io.swagger.v3.oas.annotations.media.ExampleObject;
-import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import org.springframework.http.MediaType;
-import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import org.springframework.web.util.UriComponentsBuilder;
-import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
-
-import java.net.URI;
-import java.time.Instant;
+import java.time.*;
+import java.util.*;
 
 @RestController
 @RequestMapping("/v1/tenants/{tenantId}/schedules")
-@Tag(name = "Schedules", description = "Criação e gerenciamento de schedules por tenant")
+@Tag(name="Schedules",description="Tenant-scoped schedules; retries share one idempotency key per version")
 public class ScheduleController {
-
-	private final CreateScheduleUseCase createSchedule;
-	private final ObjectMapper objectMapper;
-
-	public ScheduleController(CreateScheduleUseCase createSchedule, ObjectMapper objectMapper) {
-		this.createSchedule = createSchedule;
-		this.objectMapper = objectMapper;
-	}
-
-	@PostMapping
-	@Operation(
-			summary = "Cria um schedule",
-			description = "Persiste um schedule futuro e o registra no timer local. "
-					+ "O PostgreSQL permanece como fonte de verdade."
-	)
-	@ApiResponses({
-			@ApiResponse(
-					responseCode = "201",
-					description = "Schedule criado",
-					headers = {
-							@Header(name = "Location", description = "URI do schedule criado", schema = @Schema(type = "string")),
-							@Header(name = "ETag", description = "Versão atual do schedule", schema = @Schema(type = "string", example = "\"1\""))
-					},
-					content = @Content(
-							mediaType = MediaType.APPLICATION_JSON_VALUE,
-							schema = @Schema(implementation = ScheduleResponse.class),
-							examples = @ExampleObject(value = """
-									{
-									  "tenantId": "tenant-a",
-									  "scheduleId": "schedule-001",
-									  "version": 1,
-									  "dueAt": "2030-01-01T12:00:00Z",
-									  "state": "SCHEDULED",
-									  "targetType": "FAKE"
-									}
-									""")
-				)
-			),
-			@ApiResponse(
-					responseCode = "400",
-					description = "Requisição inválida ou dueAt não está no futuro",
-					content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE,
-							schema = @Schema(implementation = ProblemDetail.class))
-			),
-			@ApiResponse(
-					responseCode = "409",
-					description = "Já existe um schedule com o mesmo tenantId e scheduleId",
-					content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE,
-							schema = @Schema(implementation = ProblemDetail.class))
-			)
-	})
-	public ResponseEntity<ScheduleResponse> create(
-			@Parameter(description = "Identificador do tenant", example = "tenant-a", required = true)
-			@PathVariable @NotBlank String tenantId,
-			@io.swagger.v3.oas.annotations.parameters.RequestBody(
-					required = true,
-					description = "Schedule futuro e payload que será entregue ao destino",
-					content = @Content(
-							mediaType = MediaType.APPLICATION_JSON_VALUE,
-							schema = @Schema(implementation = CreateScheduleRequest.class),
-							examples = @ExampleObject(value = """
-									{
-									  "scheduleId": "schedule-001",
-									  "dueAt": "2030-01-01T12:00:00Z",
-									  "payload": {"kind": "manual-test"}
-									}
-									""")
-					)
-			)
-			@Valid @RequestBody CreateScheduleRequest request
-	) throws JacksonException {
-		String payload = objectMapper.writeValueAsString(request.payload() == null ? new Object() : request.payload());
-		Schedule schedule = createSchedule.create(new CreateScheduleCommand(
-				tenantId,
-				request.scheduleId(),
-				request.dueAt(),
-				payload
-		));
-
-		URI location = UriComponentsBuilder
-				.fromPath("/v1/tenants/{tenantId}/schedules/{scheduleId}")
-				.buildAndExpand(schedule.tenantId(), schedule.scheduleId())
-				.encode()
-				.toUri();
-		return ResponseEntity.created(location)
-				.eTag(Long.toString(schedule.version()))
-				.body(ScheduleResponse.from(schedule));
-	}
-
-	public record CreateScheduleRequest(
-			@Schema(description = "Identificador único do schedule dentro do tenant", example = "schedule-001")
-			@NotBlank String scheduleId,
-			@Schema(description = "Instante futuro em UTC no formato ISO-8601", example = "2030-01-01T12:00:00Z")
-			@NotNull Instant dueAt,
-			@Schema(description = "Objeto JSON opaco preservado até a entrega", example = "{\"kind\":\"manual-test\"}")
-			Object payload
-	) {
-	}
-
-	@Schema(description = "Representação do schedule recém-criado")
-	public record ScheduleResponse(
-			@Schema(example = "tenant-a") String tenantId,
-			@Schema(example = "schedule-001") String scheduleId,
-			@Schema(example = "1") long version,
-			@Schema(example = "2030-01-01T12:00:00Z") Instant dueAt,
-			@Schema(example = "SCHEDULED", allowableValues = {"SCHEDULED", "DELIVERED"}) String state,
-			@Schema(example = "FAKE", allowableValues = "FAKE") String targetType
-	) {
-		static ScheduleResponse from(Schedule schedule) {
-			return new ScheduleResponse(
-					schedule.tenantId(),
-					schedule.scheduleId(),
-					schedule.version(),
-					schedule.dueAt(),
-					schedule.state().name(),
-					schedule.targetType()
-			);
-		}
-	}
+    private final CreateScheduleUseCase create;
+    private final CancelScheduleUseCase cancel;
+    private final RescheduleScheduleUseCase reschedule;
+    private final ScheduleQueryService queries;
+    private final ObjectMapper mapper;
+    public ScheduleController(CreateScheduleUseCase create,CancelScheduleUseCase cancel,RescheduleScheduleUseCase reschedule,
+            ScheduleQueryService queries,ObjectMapper mapper) {
+        this.create=create; this.cancel=cancel; this.reschedule=reschedule; this.queries=queries; this.mapper=mapper;
+    }
+    @PostMapping
+    @Operation(summary="Create or replay an idempotent request for the same tenant/scheduleId",
+        description="An identical request returns the current representation; a conflicting body returns 409. Use a registered targetId.")
+    @ApiResponses({@ApiResponse(responseCode="201",description="Schedule persisted"),
+        @ApiResponse(responseCode="400",description="Invalid request"),@ApiResponse(responseCode="409",description="Identifier already used by another request")})
+    public ResponseEntity<ScheduleResponse> create(@PathVariable String tenantId,@Valid @RequestBody CreateScheduleRequest request) {
+        String payload=mapper.writeValueAsString(canonical(request.payload()==null?Map.of():request.payload()));
+        Schedule schedule=create.create(new CreateScheduleCommand(tenantId,request.scheduleId(),request.dueAt(),payload,
+                request.targetId(),request.retryPolicy(),request.maxLateness()));
+        var location=UriComponentsBuilder.fromPath("/v1/tenants/{tenantId}/schedules/{scheduleId}")
+                .buildAndExpand(tenantId,schedule.scheduleId()).encode().toUri();
+        return ResponseEntity.created(location).eTag(Long.toString(schedule.version())).body(ScheduleResponse.from(schedule));
+    }
+    @GetMapping("/{scheduleId}")
+    @Operation(summary="Get state, version, attempts and the next retry deadline")
+    public ResponseEntity<ScheduleResponse> get(@PathVariable String tenantId,@PathVariable String scheduleId) {
+        return response(queries.get(tenantId,scheduleId));
+    }
+    @GetMapping
+    @Operation(summary="List schedules for a tenant; use nextCursor to retrieve the next page")
+    public ScheduleQueryService.Page<ScheduleResponse> list(@PathVariable String tenantId,
+            @RequestParam(required=false) ScheduleState state,@RequestParam(required=false) Instant dueFrom,
+            @RequestParam(required=false) Instant dueTo,@RequestParam(required=false) String targetId,
+            @RequestParam(required=false) String cursor,@RequestParam(defaultValue="50") int limit) {
+        var page=queries.list(tenantId,state,dueFrom,dueTo,targetId,cursor,limit);
+        return new ScheduleQueryService.Page<>(page.items().stream().map(ScheduleResponse::from).toList(),page.nextCursor());
+    }
+    @GetMapping("/{scheduleId}/history")
+    public ScheduleQueryService.Page<ScheduleHistory> history(@PathVariable String tenantId,@PathVariable String scheduleId,
+            @RequestParam(defaultValue="0") long cursor,@RequestParam(defaultValue="50") int limit) {
+        return queries.history(tenantId,scheduleId,cursor,limit);
+    }
+    @PutMapping("/{scheduleId}")
+    @Operation(summary="Reschedule before a claim; start a new version and retry budget")
+    public ResponseEntity<ScheduleResponse> reschedule(@PathVariable String tenantId,@PathVariable String scheduleId,
+            @RequestHeader("If-Match") String version,@Valid @RequestBody RescheduleScheduleRequest request) {
+        return response(reschedule.reschedule(new RescheduleScheduleCommand(tenantId,scheduleId,parseVersion(version),request.dueAt())));
+    }
+    @PostMapping("/{scheduleId}:cancel")
+    @Operation(summary="Cancel SCHEDULED or RETRY_WAIT; CLAIMED returns 409")
+    public ResponseEntity<ScheduleResponse> cancel(@PathVariable String tenantId,@PathVariable String scheduleId,@RequestHeader("If-Match") String version) {
+        return response(cancel.cancel(new CancelScheduleCommand(tenantId,scheduleId,parseVersion(version))));
+    }
+    @PostMapping("/{scheduleId}:redrive")
+    @Operation(summary="Redrive dead-lettered or expired schedules with a new intent and idempotency key",
+        description="Requires the schedules:redrive scope. A previous effect may already have occurred: review the history before redriving.")
+    public ResponseEntity<ScheduleResponse> redrive(@PathVariable String tenantId,@PathVariable String scheduleId,
+            @RequestHeader("If-Match") String version,@Valid @RequestBody RescheduleScheduleRequest request) {
+        return response(queries.redrive(tenantId,scheduleId,parseVersion(version),request.dueAt()));
+    }
+    private static ResponseEntity<ScheduleResponse> response(Schedule s) {
+        return ResponseEntity.ok().eTag(Long.toString(s.version())).body(ScheduleResponse.from(s));
+    }
+    static long parseVersion(String value) {
+        String v=value.trim();
+        if(v.startsWith("\"") && v.endsWith("\"") && v.length()>1) v=v.substring(1,v.length()-1);
+        try { long version=Long.parseLong(v); if(version<1) throw new NumberFormatException(); return version; }
+        catch(NumberFormatException e) { throw new InvalidScheduleException("If-Match must contain a positive numeric ETag"); }
+    }
+    private static Object canonical(Object value) {
+        if(value instanceof Map<?,?> map) {
+            Map<String,Object> result=new TreeMap<>(); map.forEach((k,v)->result.put(k.toString(),canonical(v))); return result;
+        }
+        if(value instanceof List<?> list) return list.stream().map(ScheduleController::canonical).toList();
+        return value;
+    }
+    public record CreateScheduleRequest(@NotBlank String scheduleId,@NotNull Instant dueAt,Object payload,
+            String targetId,RetryPolicy retryPolicy,Duration maxLateness) {}
+    public record RescheduleScheduleRequest(@NotNull Instant dueAt) {}
+    public record ScheduleResponse(String tenantId,String scheduleId,long version,Instant dueAt,String state,
+            String targetType,String targetId,int attempts,Instant nextAttemptAt,String lastError,Instant deliveredAt,
+            Instant cancelledAt,RetryPolicy retryPolicy,Duration maxLateness) {
+        static ScheduleResponse from(Schedule s) {
+            return new ScheduleResponse(s.tenantId(),s.scheduleId(),s.version(),s.dueAt(),s.state().name(),s.targetType(),
+                    s.targetId(),s.attempts(),s.nextAttemptAt(),s.lastError(),s.deliveredAt(),s.cancelledAt(),s.retryPolicy(),s.maxLateness());
+        }
+    }
 }

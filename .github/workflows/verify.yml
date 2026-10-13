@@ -1,0 +1,37 @@
+name: verify
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - run: ./mvnw -B verify
+      - run: docker build -t scheduler-app:local .
+      - uses: anchore/sbom-action@v0
+        with:
+          image: scheduler-app:local
+          output-file: scheduler.sbom.spdx.json
+      - uses: anchore/scan-action@v7
+        with:
+          image: scheduler-app:local
+          fail-build: true
+          severity-cutoff: high
+          output-format: table
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification
+          path: |
+            target/surefire-reports/
+            scheduler.sbom.spdx.json
+          retention-days: 14

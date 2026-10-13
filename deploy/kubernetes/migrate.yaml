@@ -1,0 +1,29 @@
+# Run and await completion BEFORE rolling out scheduler.yaml. Unique name per release.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: scheduler-migrate-REPLACE_RELEASE
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001}
+      containers:
+        - name: migrate
+          image: REPLACE_REGISTRY/scheduler:REPLACE_RELEASE
+          args: ["--spring.main.web-application-type=none", "--scheduler.migration-only=true", "--spring.flyway.enabled=true"]
+          envFrom:
+            - secretRef: {name: scheduler-migrator}
+          # SPRING_DATASOURCE_URL/USERNAME/PASSWORD; schema-owner role, separate from runtime.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: "250m", memory: 256Mi}
+            limits: {cpu: "1", memory: 768Mi}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {sizeLimit: 128Mi}}]

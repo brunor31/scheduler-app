@@ -40,3 +40,25 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Python tooling and encrypted operational artifacts ###
+__pycache__/
+*.py[cod]
+*.age
+*.age.sha256
+*.dump
+
+### Keep the root README and ADRs; detailed documentation lives in Notion ###
+*.md
+*.mdx
+*.rst
+*.adoc
+/src/main/java/com/greentech/scheduler_app/docs/*
+!/README.md
+!/src/main/java/com/greentech/scheduler_app/docs/adr/
+!/src/main/java/com/greentech/scheduler_app/docs/adr/**
+
+### Local scripts and development tooling ###
+/scripts/
+/deploy/local/
+/compose.yaml

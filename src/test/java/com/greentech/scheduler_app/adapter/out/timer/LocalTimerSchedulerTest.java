@@ -23,6 +23,18 @@ class LocalTimerSchedulerTest {
 	private static final Instant NOW = Instant.parse("2026-08-29T18:00:00Z");
 	private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
 
+    @Test void boundsMemoryAndDefersSchedulesBeyondLookAhead() {
+        var registry=new SimpleMeterRegistry();
+        var properties=new com.greentech.scheduler_app.infrastructure.config.TimerProperties(Duration.ofMinutes(1),null,2,2,10,null);
+        var scheduler=new LocalTimerScheduler((tenant,id,version)->{},CLOCK,registry,1,1,properties,null);
+        scheduler.schedule(Schedule.create("tenant-a","distant",NOW.plusSeconds(120),"{}",NOW));
+        assertThat(scheduler.remainingCapacity()).isEqualTo(2);
+        for(int i=0;i<10;i++) scheduler.schedule(Schedule.create("tenant-a","near-"+i,NOW.plusSeconds(30),"{}",NOW));
+        assertThat(scheduler.remainingCapacity()).isZero();
+        assertThat(gauge(registry,"scheduler.timer.queue.size")).isEqualTo(2);
+        scheduler.stop();
+    }
+
 	@Test
 	void limitsParallelDeliveryAndAppliesBackpressure() throws InterruptedException {
 		SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
@@ -108,6 +120,7 @@ class LocalTimerSchedulerTest {
 				"{}",
 				NOW.minusSeconds(1),
 				NOW.minusSeconds(1),
+				null,
 				null
 		);
 	}

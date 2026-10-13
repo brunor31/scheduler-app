@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for POC-0b.
+Accepted for POC-0b. The bounded coordinator/queue/worker decision remains active. Historical defaults and validation plans below describe that experiment. Four delivery workers are now configured after the POC-0b measurements; ADR-0008 records current admission, memory, recovery and drain limits. ADR-0004 adds persistent claims and ADR-0005 adds HTTP/retries. This ADR alone does not establish distributed safety.
 
 ## Context
 

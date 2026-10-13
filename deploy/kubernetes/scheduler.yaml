@@ -1,0 +1,90 @@
+# Template: replace image with an immutable digest and provision referenced Secrets.
+# PostgreSQL HA/PITR, TLS ingress, OIDC and target networking belong to the environment.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scheduler-config
+data:
+  SPRING_PROFILES_ACTIVE: prod
+  SPRING_FLYWAY_ENABLED: "false"
+  SPRING_CONFIG_ADDITIONAL_LOCATION: file:/config/targets.properties
+  OIDC_AUDIENCE: scheduler-api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  strategy:
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  selector:
+    matchLabels: {app: scheduler}
+  template:
+    metadata:
+      labels: {app: scheduler}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 65
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: {app: scheduler}
+      containers:
+        - name: scheduler
+          image: REPLACE_REGISTRY/scheduler:REPLACE_RELEASE
+          ports: [{name: http, containerPort: 8080}]
+          envFrom:
+            - configMapRef: {name: scheduler-config}
+            - secretRef: {name: scheduler-runtime}
+          # scheduler-runtime: DATABASE_URL (TLS), DATABASE_USER, DATABASE_PASSWORD,
+          # OIDC_ISSUER_URI, OIDC_JWK_SET_URI and SCHEDULER_TARGET_* bearer secrets.
+          resources:
+            requests: {cpu: "500m", memory: 512Mi}
+            limits: {cpu: "2", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          startupProbe:
+            httpGet: {path: /actuator/health/liveness, port: http}
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet: {path: /actuator/health/readiness, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 4
+          livenessProbe:
+            httpGet: {path: /actuator/health/liveness, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: targets, mountPath: /config, readOnly: true}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 128Mi}
+        - name: targets
+          configMap: {name: scheduler-targets}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scheduler
+spec:
+  selector: {app: scheduler}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: scheduler
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: scheduler}

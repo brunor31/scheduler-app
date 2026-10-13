@@ -11,10 +11,10 @@ import org.springframework.context.annotation.Configuration;
 		info = @Info(
 				title = "Durable Scheduling Platform API",
 				version = "v1",
-				description = "API do POC-0 para criar schedules duráveis com entrega at-least-once.",
+				description = "API for durable schedules with at-least-once delivery.",
 				license = @License(name = "Proprietary")
 		),
-		servers = @Server(url = "/", description = "Servidor atual")
+		servers = @Server(url = "/", description = "Current server")
 )
 public class OpenApiConfiguration {
 }
